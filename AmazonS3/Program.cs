@@ -1,7 +1,11 @@
 ﻿using Amazon;
+using Amazon.S3;
 using AmazonS3;
 
-var deleter = new S3Deleter(RegionEndpoint.APSoutheast2);
+var client = new AmazonS3Client(RegionEndpoint.APSoutheast2);
+
+var s3Service = new S3Service(client);
+
 using var cts = new CancellationTokenSource();
 
-var result = await deleter.DeleteObjectsByPrefixAsync("mohsenawsbucket", "0f7358c7-e00d-4f0e-9611-3e585bb6dd9e", cts.Token);
+var result = await s3Service.DeleteObjectsByPrefixAsync("mohsenawsbucket", "solution.java", cts.Token);

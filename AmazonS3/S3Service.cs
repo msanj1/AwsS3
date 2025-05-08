@@ -1,11 +1,5 @@
 ﻿using Amazon.S3.Model;
 using Amazon.S3;
-using Amazon;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace AmazonS3
 {
@@ -21,31 +15,25 @@ namespace AmazonS3
         public required string AwsS3Key { get; set; }
     }
 
-    public class Operation<T>
-        where T: new()
-    {
-        public bool Successful { get; set; }
-        public T Item { get; set; }
-    }
-
-    public class S3Deleter
+    public class S3Service
     {
         private readonly IAmazonS3 _s3Client;
 
-        public S3Deleter(RegionEndpoint region)
+        public S3Service(IAmazonS3 client)
         {
-            _s3Client = new AmazonS3Client(region);
+            _s3Client = client;
         }
 
-        public async Task<Operation<List<S3Item>>> SelectObjectsByPrefixAsync(
+        public async Task<(bool, List<S3Item>)> SelectObjectsByPrefixAsync(
             string bucketName,
             string prefix,
             CancellationToken cancellationToken = default)
         {
             string? continuationToken = null;
 
-            var operation = new Operation<List<S3Item>>();
-            operation.Item = new List<S3Item>();
+            var operationSuccessful = false;
+            var objectsSelected = new List<S3Item>();
+
             try
             {
                 do
@@ -61,51 +49,52 @@ namespace AmazonS3
 
                     var listResponse = await _s3Client.ListObjectsV2Async(listRequest, cancellationToken);
                     if (listResponse.S3Objects != null)
-                        operation.Item.AddRange(listResponse.S3Objects.Select(obj => new S3Item { AwsS3Key = obj.Key }));
+                        objectsSelected.AddRange(listResponse.S3Objects.Select(obj => new S3Item { AwsS3Key = obj.Key }));
 
                     continuationToken = listResponse.IsTruncated.GetValueOrDefault() ? listResponse.NextContinuationToken : null;
 
                 } while (continuationToken != null);
-                operation.Successful = true;
+
+                operationSuccessful = true;
             }
             catch (Exception e)
             {
-                return operation;
+                Console.WriteLine($"Error occured "+ e.Message);
             }
 
-            return operation;
+            return (operationSuccessful, objectsSelected);
         }
 
-        public async Task<S3DeletionSummary> DeleteObjectsByPrefixAsync(
+        public async Task<(bool, S3DeletionSummary)> DeleteObjectsByPrefixAsync(
             string bucketName,
             string prefix,
             CancellationToken cancellationToken = default)
         {
             Console.WriteLine($"Fetching objects with prefix: {prefix}");
 
+            var operationSummary = new S3DeletionSummary();
+            var operationSuccessful = false;
             var allKeysToDelete = new List<KeyVersion>();
 
-            var allObjects = await SelectObjectsByPrefixAsync(bucketName, prefix, cancellationToken);
+            var (successful, allObjects) = await SelectObjectsByPrefixAsync(bucketName, prefix, cancellationToken);
 
-            if (!allObjects.Successful)
+            if (!successful)
             {
-                return new S3DeletionSummary();
+                return (operationSuccessful, operationSummary);
             }
 
-            allKeysToDelete.AddRange(allObjects.Item.Select(obj => new KeyVersion { Key = obj.AwsS3Key }));
+            allKeysToDelete.AddRange(allObjects.Select(obj => new KeyVersion { Key = obj.AwsS3Key }));
 
-            var summary = new S3DeletionSummary
-            {
-                TotalObjectsFound = allKeysToDelete.Count
-            };
+            operationSummary.TotalObjectsFound = allKeysToDelete.Count;
 
-            if (summary.TotalObjectsFound == 0)
+            if (operationSummary.TotalObjectsFound == 0)
             {
+                operationSuccessful = true;
                 Console.WriteLine("No objects found with the specified prefix.");
-                return summary;
+                return (operationSuccessful, operationSummary);
             }
 
-            Console.WriteLine($"Found {summary.TotalObjectsFound} objects. Starting batch deletion...");
+            Console.WriteLine($"Found {operationSummary.TotalObjectsFound} objects. Starting batch deletion...");
 
             const int batchSize = 1000;
             int batchCount = 0;
@@ -124,9 +113,9 @@ namespace AmazonS3
 
                     var deleteResponse = await _s3Client.DeleteObjectsAsync(deleteRequest, cancellationToken);
 
-                    summary.TotalDeleted += deleteResponse.DeletedObjects.Count;
-                    if(deleteResponse.DeleteErrors != null)
-                      summary.Errors.AddRange(deleteResponse.DeleteErrors);
+                    operationSummary.TotalDeleted += deleteResponse.DeletedObjects.Count;
+                    if(deleteResponse.DeleteErrors != null) { }
+                        operationSummary.Errors.AddRange(deleteResponse.DeleteErrors);
 
                     batchCount++;
                     Console.WriteLine($"Batch {batchCount}: Deleted {deleteResponse.DeletedObjects.Count} objects.");
@@ -135,12 +124,15 @@ namespace AmazonS3
             catch (Exception e)
             {
                 Console.WriteLine("Deletion cancelled mid-operation.");
+                operationSuccessful = false;
             }
 
             Console.WriteLine("Deletion complete.");
-            Console.WriteLine($"Summary: Found = {summary.TotalObjectsFound}, Deleted = {summary.TotalDeleted}, Errors = {summary.Errors.Count}");
+            Console.WriteLine($"Summary: Found = {operationSummary.TotalObjectsFound}, Deleted = {operationSummary.TotalDeleted}, Errors = {operationSummary.Errors.Count}");
 
-            return summary;
+            operationSuccessful = operationSummary.Errors.Count == 0;
+
+            return (operationSuccessful, operationSummary);
         }
     }
 }
